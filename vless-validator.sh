@@ -17,7 +17,6 @@
 
 _VERSION="1.0.dev0"
 
-# URL to test
 if [ -f ".env" ]; then source .env; fi
 TEST_URL=${TEST_URL:-http://example.com}
 CONN_TIMEOUT=${CONN_TIMEOUT:-3}
