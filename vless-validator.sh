@@ -19,6 +19,7 @@ _VERSION="1.0.dev0"
 
 if [ -f ".env" ]; then source .env; fi
 TEST_URL=${TEST_URL:-http://example.com}
+DNS_SERVER=${DNS_SERVER:-8.8.8.8}
 CONN_TIMEOUT=${CONN_TIMEOUT:-3}
 MAX_TIME=${MAX_TIME:-6}
 RETRIES=${RETRIES:-1}
@@ -31,10 +32,10 @@ _TMP_CONFIG=".vless-validator_config_tmp.json"
 # NOTE: Uses Google DNS over UDP because Cloudflare and/or DoH could be banned
 CONFIG_LOG='"log": { "disabled": false, "level": "info", "output": "'"$_TMP_LOG"'", "timestamp": false }'
 CONFIG_DNS='"dns": { "servers": [{ "type": "local", "tag": "local", "detour": "direct" }'
-CONFIG_DNS+=', { "type": "udp", "tag": "google-udp", "server": "8.8.8.8", "server_port": 53, "detour": "vless-out" }]'
-CONFIG_DNS+=', "strategy": "prefer_ipv4", "final": "google-udp" }'
+CONFIG_DNS+=', { "type": "udp", "tag": "dns-udp", "server": "'"$DNS_SERVER"'"'
+CONFIG_DNS+=', "server_port": 53, "detour": "vless-out" }], "strategy": "prefer_ipv4", "final": "dns-udp" }'
 CONFIG_ROUTE='"route": { "rules": [{ "action": "sniff" }, { "protocol": "dns", "action": "hijack-dns" }]'
-CONFIG_ROUTE+=', "final": "vless-out", "default_domain_resolver": "google-udp" }'
+CONFIG_ROUTE+=', "final": "vless-out", "default_domain_resolver": "dns-udp" }'
 CONFIG_OUTBOUND_DIRECT='{ "type": "direct", "tag": "direct"'
 CONFIG_OUTBOUND_DIRECT+=', "domain_resolver": { "server": "local", "strategy": "prefer_ipv4" }}'
 
@@ -420,8 +421,9 @@ prepare() {
     inbound_port=$(get_unused_port)
     LOGGER "Inbound proxy port: $inbound_port"
 
-    # Log test URL
+    # Log test URL and DNS
     LOGGER "Test URL: $TEST_URL"
+    LOGGER "Remote DNS server: $DNS_SERVER"
 }
 
 # ####################### #
@@ -477,6 +479,7 @@ else
     echo "  If needed, you can define environment variables in a .env file."
     echo -e "\nEnvironment variables:"
     echo "  TEST_URL - URL to test via VLESS. Current: $TEST_URL"
+    echo "  DNS_SERVER - Remote UDP DNS server IP. Current: $DNS_SERVER"
     echo "  SING_BOX_PATH - Path to sing-box binary (can be auto-downloaded)"
     echo "  CONN_TIMEOUT - --connect-timeout for curl. Current: $CONN_TIMEOUT"
     echo "  MAX_TIME - --max-time for curl. Current: $MAX_TIME"
