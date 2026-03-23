@@ -468,7 +468,7 @@ lines_n="$2"
 # Single VLESS link provided
 if [[ "$link_or_file" == vless://* ]]; then
     prepare
-    LOGGER "\n"
+    LOGGER ""
     test_link "$link_or_file"
     exit $?
 
