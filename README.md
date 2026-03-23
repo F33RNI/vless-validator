@@ -2,7 +2,7 @@
 
 ## Simple script for linux and Android* for testing VLESS lists
 
-Allows you to automatically test a bunch of `vless://` links with real URLs.
+Allows you to automatically test a bunch of `vless://` links with real URLs using multiple concurrent processes.
 
 > *Use Termux app <https://github.com/termux/termux-app> for Android.
 
@@ -32,6 +32,7 @@ Environment variables:
   TEST_URL - URL to test via VLESS. Current: http://example.com
   DNS_SERVER - Remote UDP DNS server IP. Current: 8.8.8.8
   SING_BOX_PATH - Path to sing-box binary (can be auto-downloaded)
+  PROCS_N - Number of concurrent processes for testing. Current: 4
   CONN_TIMEOUT - --connect-timeout for curl. Current: 3
   MAX_TIME - --max-time for curl. Current: 6
   RETRIES - --retry for curl. Current: 1

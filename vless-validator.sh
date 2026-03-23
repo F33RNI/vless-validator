@@ -15,22 +15,27 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <http://www.gnu.org/licenses/>.
 
-_VERSION="1.0.dev1"
+_VERSION="2.0.dev0"
 
 if [ -f ".env" ]; then source .env; fi
 TEST_URL=${TEST_URL:-http://example.com}
 DNS_SERVER=${DNS_SERVER:-8.8.8.8}
+PROCS_N=${PROCS_N:-4}
 CONN_TIMEOUT=${CONN_TIMEOUT:-3}
 MAX_TIME=${MAX_TIME:-6}
 RETRIES=${RETRIES:-1}
 
-_MAIN_LOG_PREFIX="vless-validator"
-_TMP_LOG=".vless-validator_log_tmp.log"
-_TMP_CONFIG=".vless-validator_config_tmp.json"
+# Main script log file
+_LOG_PREFIX="vless-validator"
 
-# Pre-defined sing-box config
+# sing-box temp log and config files
+_TMP_LOG_PREFIX=".vless-validator"
+_TMP_LOG_SUFFIX="log_tmp.log"
+_TMP_CONFIG_PREFIX=".vless-validator"
+_TMP_CONFIG_SUFFIX="config_tmp.json"
+
+# Pre-defined sing-box config objects
 # NOTE: Uses Google DNS over UDP because Cloudflare and/or DoH could be banned
-CONFIG_LOG='"log": { "disabled": false, "level": "info", "output": "'"$_TMP_LOG"'", "timestamp": false }'
 CONFIG_DNS='"dns": { "servers": [{ "type": "local", "tag": "local", "detour": "direct" }'
 CONFIG_DNS+=', { "type": "udp", "tag": "dns-udp", "server": "'"$DNS_SERVER"'"'
 CONFIG_DNS+=', "server_port": 53, "detour": "vless-out" }], "strategy": "prefer_ipv4", "final": "dns-udp" }'
@@ -44,7 +49,7 @@ CONFIG_OUTBOUND_DIRECT+=', "domain_resolver": { "server": "local", "strategy": "
 #   1: Text to log
 LOGGER() {
     echo -e "$1"
-    echo -e "$1" >>"${_MAIN_LOG_PREFIX}_${log_datetime}.log"
+    echo -e "$1" >>"${_LOG_PREFIX}_${log_datetime}.log"
 }
 
 # Converts VLESS link to sing-box's outbound JSON config
@@ -52,7 +57,7 @@ LOGGER() {
 #   1: VLESS link (must start with vless://)
 # Returns:
 #   Parsed link in JSON format or nothing in case of error
-vless_to_json() {
+vless_to_outbound() {
     local _link="$1"
     if [[ ! "$_link" == vless://* ]]; then return; fi
 
@@ -136,55 +141,23 @@ vless_to_json() {
 
 # Builds sing-box JSON config
 # Args:
-#   1: VLESS outbound (output of vless_to_json function)
+#   1: VLESS outbound (output of vless_to_outbound function)
+#   2: Path to sing-box .log file
+#   3: Port number for SOCKS5 inbound
 # Returns:
 #   Full JSON config for sing-box
 build_sing_box_config() {
     local _vless_outbound=$1
+    local _sing_box_log=$2
+    local _inbound_port=$3
 
-    local _config="$CONFIG_LOG, $CONFIG_DNS"
+    local _config='"log": { "disabled": false, "level": "info", "timestamp": false, "output": "'"$_sing_box_log"'" }'
+    _config+=", $CONFIG_DNS"
     _config+=', "inbounds": [{ "type": "socks", "tag": "socks-in"'
-    _config+=', "listen": "127.0.0.1", "listen_port": '"$inbound_port"' }]'
+    _config+=', "listen": "127.0.0.1", "listen_port": '"$_inbound_port"' }]'
     _config+=', "outbounds": ['"$_vless_outbound"', '"$CONFIG_OUTBOUND_DIRECT"']'
     _config+=", ${CONFIG_ROUTE}"
     echo "{ $_config }"
-}
-
-# Checks if port is in use
-# TODO: Test and improve this function
-# Args:
-#   1: Port number
-# Returns (code):
-#   0 if in use
-is_port_in_use() {
-    local _port=$1
-
-    # Try ss
-    if command -v ss >/dev/null 2>&1; then
-        ss -ltn 2>/dev/null | awk '{print $4}' | grep -E "[.:]$_port$" >/dev/null 2>&1
-        return $?
-    fi
-
-    # Fallback to netstat
-    if command -v netstat >/dev/null 2>&1; then
-        netstat -ltn 2>/dev/null | awk '{print $4}' | grep -E "[.:]$_port$" >/dev/null 2>&1
-        return $?
-    fi
-
-    # Fallback to lsof
-    if command -v lsof >/dev/null 2>&1; then
-        lsof -iTCP:"$_port" -sTCP:LISTEN >/dev/null 2>&1
-        return $?
-    fi
-
-    # Fallback to nc
-    if command -v nc >/dev/null 2>&1; then
-        nc -z localhost "$_port" >/dev/null 2>&1
-        return $?
-    fi
-
-    # Safe fallback (port in use)
-    return 0
 }
 
 # Generates unused port
@@ -192,6 +165,43 @@ is_port_in_use() {
 # Returns:
 #   Unused port in 2000-65000 range
 get_unused_port() {
+    # Checks if port is in use
+    # TODO: Test and improve this function
+    # Args:
+    #   1: Port number
+    # Returns (code):
+    #   0 if in use
+    is_port_in_use() {
+        local _port=$1
+
+        # Try ss
+        if command -v ss >/dev/null 2>&1; then
+            ss -ltn 2>/dev/null | awk '{print $4}' | grep -E "[.:]$_port$" >/dev/null 2>&1
+            return $?
+        fi
+
+        # Fallback to netstat
+        if command -v netstat >/dev/null 2>&1; then
+            netstat -ltn 2>/dev/null | awk '{print $4}' | grep -E "[.:]$_port$" >/dev/null 2>&1
+            return $?
+        fi
+
+        # Fallback to lsof
+        if command -v lsof >/dev/null 2>&1; then
+            lsof -iTCP:"$_port" -sTCP:LISTEN >/dev/null 2>&1
+            return $?
+        fi
+
+        # Fallback to nc
+        if command -v nc >/dev/null 2>&1; then
+            nc -z localhost "$_port" >/dev/null 2>&1
+            return $?
+        fi
+
+        # Safe fallback (port in use)
+        return 0
+    }
+
     local _port=$(shuf -i 2000-65000 -n 1)
     if ! is_port_in_use "$_port"; then
         echo "$_port"
@@ -304,40 +314,48 @@ test_link() {
     local LC_ALL=C
     local _link_decoded=$(echo "$_link" | sed "s@+@ @g;s@%@\\\\x@g" | xargs -0 printf "%b")
 
+    local _inbound_port=$(get_unused_port)
+
     # Split profile name
     local _profile_name="${_link_decoded#*#}"
     if [ -z "$_profile_name" ]; then
         _profile_name="$_link_decoded"
     fi
 
-    local _outbound=$(vless_to_json "$_link_decoded")
-    local _config=$(build_sing_box_config "$_outbound")
+    # Add current PID in the middle of temp files
+    local _pid="$$"
+    local _sing_box_config="${_TMP_CONFIG_PREFIX}_${_pid}_${_TMP_CONFIG_SUFFIX}"
+    local _sing_box_log="${_TMP_LOG_PREFIX}_${_pid}_${_TMP_LOG_SUFFIX}"
 
-    LOGGER '\nTesting "'"$_profile_name"'"...'
+    local _outbound=$(vless_to_outbound "$_link_decoded")
+    local _config=$(build_sing_box_config "$_outbound" "$_sing_box_log" "$_inbound_port")
+
+    LOGGER "[$_profile_name] Testing..."
 
     # Remove old temp files (just in case)
-    rm -f "$_TMP_CONFIG"
-    rm -f "$_TMP_LOG"
+    rm -f "$_sing_box_config"
+    rm -f "$_sing_box_log"
 
     # Start sing-box
-    echo "$_config" >|"$_TMP_CONFIG"
-    $SING_BOX_PATH run -c "$_TMP_CONFIG" &
-    sing_box_pid=$!
+    echo "$_config" >|"$_sing_box_config"
+    $SING_BOX_PATH run -c "$_sing_box_config" &
+    local _sing_box_pid=$!
 
     # Ensure cleanup on exit
     _stop_sing_box() {
-        kill "$sing_box_pid" 2>/dev/null
-        rm -f "$_TMP_CONFIG"
-        rm -f "$_TMP_LOG"
+        if [ -z "$_sing_box_pid" ]; then return; fi
+        kill "$_sing_box_pid" 2>/dev/null
+        rm -f "$_sing_box_config"
+        rm -f "$_sing_box_log"
     }
     trap _stop_sing_box EXIT
 
     # Wait for sing-box to start
     local _sing_box_start_time=$(date +%s)
-    until grep -q "sing-box started" "$_TMP_LOG" 2>/dev/null; do
+    until grep -q "sing-box started" "$_sing_box_log" 2>/dev/null; do
         local _now=$(date +%s)
         if ((_now - _sing_box_start_time >= 3)); then
-            LOGGER "Timeout waiting for sing-box to start!"
+            LOGGER "[$_profile_name] Timeout waiting for sing-box to start!"
             _stop_sing_box
             return 1
         fi
@@ -346,17 +364,15 @@ test_link() {
 
     # Test
     # NOTE: -s - silent, -S - show error, -f - exit code on error
-    if curl --http0.9 --socks5-hostname "127.0.0.1:$inbound_port" -sSf \
+    if curl --http0.9 --socks5-hostname "127.0.0.1:$_inbound_port" -sSf \
         --connect-timeout $CONN_TIMEOUT --max-time $MAX_TIME --retry $RETRIES --retry-delay 1 \
         --retry-all-errors --retry-connrefused \
-        -L $TEST_URL >/dev/null; then
-        LOGGER "WORKING! WORKING! WORKING! ^-^"
-        LOGGER "Link: $_link"
-        LOGGER "Outbound config: $_outbound"
+        -L $TEST_URL >/dev/null 2>&1; then
+        LOGGER "[$_profile_name] WORKING! WORKING! WORKING! ^-^\nLink: $_link\nOutbound config: $_outbound"
         _stop_sing_box
         return 0
     fi
-    LOGGER "Not working T_T"
+    LOGGER "[$_profile_name] Not working T_T"
     _stop_sing_box
     return 1
 }
@@ -379,47 +395,51 @@ test_file() {
 
     # Entire file
     if [ -z "$_lines_n" ] || [[ "$_lines_n" == "0" ]]; then
-        LOGGER "Testing entire file: $_file_path"
+        LOGGER "Testing entire file $_file_path using $PROCS_N processes"
         mapfile -t _links <"$_file_path"
 
     # Random lines
     elif [[ "$_lines_n" =~ ^r([0-9]+)$ ]]; then
         local _count="${BASH_REMATCH[1]}"
-        LOGGER "Testing $_count random lines from: $_file_path"
+        LOGGER "Testing $_count random lines from $_file_path using $PROCS_N processes"
         mapfile -t _links < <(shuf -n "$_count" "$_file_path")
 
     # Last N lines
     elif [[ "$_lines_n" =~ ^-([0-9]+)$ ]]; then
         local _count="${BASH_REMATCH[1]}"
-        LOGGER "Testing last $_count lines from: $_file_path"
+        LOGGER "Testing last $_count lines from $_file_path using $PROCS_N processes"
         mapfile -t _links < <(tail -n "$_count" "$_file_path")
 
     # First N lines
     elif [[ "$_lines_n" =~ ^[0-9]+$ ]]; then
         local _count="$_lines_n"
-        LOGGER "Testing first $_count lines from: $_file_path"
+        LOGGER "Testing first $_count lines from $_file_path using $PROCS_N processes"
         mapfile -t _links < <(head -n "$_count" "$_file_path")
     else
         LOGGER "ERROR: Unknown NUMBER_OF_LINKS_TO_TEST format: $_lines_n"
         exit 1
     fi
 
-    # Process each line
-    for _link in "${_links[@]}"; do
-        if [[ ! "$_link" == vless://* ]]; then continue; fi
-        test_link "$_link"
-    done
+    # Split and process lines between multiple processes to speed things up
+    export log_datetime
+    export -f LOGGER
+    export SING_BOX_PATH
+    export TEST_URL DNS_SERVER CONN_TIMEOUT MAX_TIME RETRIES
+    export _LOG_PREFIX _TMP_LOG_PREFIX _TMP_LOG_SUFFIX _TMP_CONFIG_PREFIX _TMP_CONFIG_SUFFIX
+    export CONFIG_DNS CONFIG_ROUTE CONFIG_OUTBOUND_DIRECT
+    export -f vless_to_outbound
+    export -f build_sing_box_config
+    export -f get_unused_port
+    export -f test_link
+    LOGGER ""
+    printf "%s\n" "${_links[@]}" | xargs -P $PROCS_N -I {} bash -c 'test_link "$@"' _ {}
 }
 
-# Downloads sing-box (if needed) and finds free unused port
+# Downloads sing-box (if needed)
 prepare() {
     # Download sing-box
     find_or_download_sing_box
     LOGGER "sing-box path: $SING_BOX_PATH"
-
-    # Find free port for proxy
-    inbound_port=$(get_unused_port)
-    LOGGER "Inbound proxy port: $inbound_port"
 
     # Log test URL and DNS
     LOGGER "Test URL: $TEST_URL"
@@ -448,6 +468,7 @@ lines_n="$2"
 # Single VLESS link provided
 if [[ "$link_or_file" == vless://* ]]; then
     prepare
+    LOGGER "\n"
     test_link "$link_or_file"
     exit $?
 
@@ -481,6 +502,7 @@ else
     echo "  TEST_URL - URL to test via VLESS. Current: $TEST_URL"
     echo "  DNS_SERVER - Remote UDP DNS server IP. Current: $DNS_SERVER"
     echo "  SING_BOX_PATH - Path to sing-box binary (can be auto-downloaded)"
+    echo "  PROCS_N - Number of concurrent processes for testing. Current: $PROCS_N"
     echo "  CONN_TIMEOUT - --connect-timeout for curl. Current: $CONN_TIMEOUT"
     echo "  MAX_TIME - --max-time for curl. Current: $MAX_TIME"
     echo "  RETRIES - --retry for curl. Current: $RETRIES"
