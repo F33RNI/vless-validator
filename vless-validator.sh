@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <http://www.gnu.org/licenses/>.
 
-_VERSION="2.0.dev1"
+_VERSION="2.1.dev1"
 
 if [ -f ".env" ]; then source .env; fi
 TEST_URL=${TEST_URL:-http://example.com}
@@ -52,9 +52,22 @@ LOGGER() {
     echo -e "$1" >>"${_LOG_PREFIX}_${log_datetime}.log"
 }
 
+# Decodes URI (and replaces "+" with " ", "&amp;" with "&")
+# Args:
+#   1: URI to decode
+# Returns:
+#   Decoded URI
+uri_decode() {
+    local _input="$1"
+    printf '%b\n' "$(printf '%s' "$_input" |
+        sed -e 's/+/ /g' \
+            -e 's/%\([0-9a-fA-F][0-9a-fA-F]\)/\\x\1/g' \
+            -e 's/&amp;/\&/g')"
+}
+
 # Converts VLESS link to sing-box's outbound JSON config
 # Args:
-#   1: VLESS link (must start with vless://)
+#   1: Decoded (from URI) VLESS link (must start with vless://)
 # Returns:
 #   Parsed link in JSON format or nothing in case of error
 vless_to_outbound() {
@@ -310,10 +323,10 @@ test_link() {
     local _link=$1
     if [[ ! "$_link" == vless://* ]]; then return -1; fi
 
-    # Decode URL symbols
-    local LC_ALL=C
-    local _link_decoded=$(echo "$_link" | sed "s@+@ @g;s@%@\\\\x@g" | xargs -0 printf "%b")
+    # Decode URI symbols
+    local _link_decoded=$(uri_decode "$_link")
 
+    # Find free port
     local _inbound_port=$(get_unused_port)
 
     # Split profile name
@@ -427,6 +440,7 @@ test_file() {
     export TEST_URL DNS_SERVER CONN_TIMEOUT MAX_TIME RETRIES
     export _LOG_PREFIX _TMP_LOG_PREFIX _TMP_LOG_SUFFIX _TMP_CONFIG_PREFIX _TMP_CONFIG_SUFFIX
     export CONFIG_DNS CONFIG_ROUTE CONFIG_OUTBOUND_DIRECT
+    export -f uri_decode
     export -f vless_to_outbound
     export -f build_sing_box_config
     export -f get_unused_port
