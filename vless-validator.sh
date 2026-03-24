@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <http://www.gnu.org/licenses/>.
 
-_VERSION="2.2.dev0"
+_VERSION="2.3.dev0"
 
 if [ -f ".env" ]; then source .env; fi
 TEST_URL=${TEST_URL:-http://example.com}
@@ -414,11 +414,21 @@ test_file() {
         LOGGER "Testing entire file $_file_path using $PROCS_N processes"
         mapfile -t _links < <(_filter_vless)
 
+    # Random ALL vless lines (r or r0)
+    elif [[ "$_lines_n" =~ ^r$ ]] || [[ "$_lines_n" =~ ^r0$ ]]; then
+        LOGGER "Testing ALL random vless lines from $_file_path using $PROCS_N processes"
+        mapfile -t _links < <(_filter_vless | shuf)
+
     # Random N vless lines
     elif [[ "$_lines_n" =~ ^r([0-9]+)$ ]]; then
         local _count="${BASH_REMATCH[1]}"
         LOGGER "Testing $_count random vless lines from $_file_path using $PROCS_N processes"
         mapfile -t _links < <(_filter_vless | shuf -n "$_count")
+
+    # Reverse ALL vless lines (- or -0)
+    elif [[ "$_lines_n" == "-" ]] || [[ "$_lines_n" == "-0" ]]; then
+        LOGGER "Testing ALL vless lines in reverse order from $_file_path using $PROCS_N processes"
+        mapfile -t _links < <(_filter_vless | tac)
 
     # Last N vless lines
     elif [[ "$_lines_n" =~ ^-([0-9]+)$ ]]; then
