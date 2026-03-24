@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <http://www.gnu.org/licenses/>.
 
-_VERSION="2.1.dev1"
+_VERSION="2.2.dev0"
 
 if [ -f ".env" ]; then source .env; fi
 TEST_URL=${TEST_URL:-http://example.com}
@@ -403,31 +403,35 @@ test_file() {
         exit 1
     fi
 
-    # Read lines into array based on N
+    _filter_vless() {
+        grep '^vless://' "$_file_path"
+    }
+
     local _links=()
 
-    # Entire file
+    # Entire file (only vless)
     if [ -z "$_lines_n" ] || [[ "$_lines_n" == "0" ]]; then
         LOGGER "Testing entire file $_file_path using $PROCS_N processes"
-        mapfile -t _links <"$_file_path"
+        mapfile -t _links < <(_filter_vless)
 
-    # Random lines
+    # Random N vless lines
     elif [[ "$_lines_n" =~ ^r([0-9]+)$ ]]; then
         local _count="${BASH_REMATCH[1]}"
-        LOGGER "Testing $_count random lines from $_file_path using $PROCS_N processes"
-        mapfile -t _links < <(shuf -n "$_count" "$_file_path")
+        LOGGER "Testing $_count random vless lines from $_file_path using $PROCS_N processes"
+        mapfile -t _links < <(_filter_vless | shuf -n "$_count")
 
-    # Last N lines
+    # Last N vless lines
     elif [[ "$_lines_n" =~ ^-([0-9]+)$ ]]; then
         local _count="${BASH_REMATCH[1]}"
-        LOGGER "Testing last $_count lines from $_file_path using $PROCS_N processes"
-        mapfile -t _links < <(tail -n "$_count" "$_file_path")
+        LOGGER "Testing last $_count vless lines from $_file_path using $PROCS_N processes"
+        mapfile -t _links < <(_filter_vless | tail -n "$_count")
 
-    # First N lines
+    # First N vless lines
     elif [[ "$_lines_n" =~ ^[0-9]+$ ]]; then
         local _count="$_lines_n"
-        LOGGER "Testing first $_count lines from $_file_path using $PROCS_N processes"
-        mapfile -t _links < <(head -n "$_count" "$_file_path")
+        LOGGER "Testing first $_count vless lines from $_file_path using $PROCS_N processes"
+        mapfile -t _links < <(_filter_vless | head -n "$_count")
+
     else
         LOGGER "ERROR: Unknown NUMBER_OF_LINKS_TO_TEST format: $_lines_n"
         exit 1
@@ -446,7 +450,7 @@ test_file() {
     export -f get_unused_port
     export -f test_link
     LOGGER ""
-    printf "%s\n" "${_links[@]}" | xargs -P $PROCS_N -I {} bash -c 'test_link "$@"' _ {}
+    printf "%s\n" "${_links[@]}" | xargs -P "$PROCS_N" -n 1 bash -c 'test_link "$1"' _
 }
 
 # Downloads sing-box (if needed)
