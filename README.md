@@ -24,15 +24,17 @@ This script downloads / parses file with multiple `vless://` links / parses sing
 Usage: ./vless-validator.sh LINK_OR_FILE [NUMBER_OF_LINKS_TO_TEST]
 
 Note:
-  Add "r" before NUMBER_OF_LINKS_TO_TEST to select N random lines;
-  add "-" before NUMBER_OF_LINKS_TO_TEST to select N lines from the bottom.
+  Add "r" before NUMBER_OF_LINKS_TO_TEST to select N random lines
+  or use just "r" as NUMBER_OF_LINKS_TO_TEST to test entire file randomly;
+  Add "-" before NUMBER_OF_LINKS_TO_TEST to select N lines from the bottom
+  or use just "-" as NUMBER_OF_LINKS_TO_TEST to test entire file backwards;
   If needed, you can define environment variables in a .env file.
 
 Environment variables:
   TEST_URL - URL to test via VLESS. Current: http://example.com
   DNS_SERVER - Remote UDP DNS server IP. Current: 8.8.8.8
   SING_BOX_PATH - Path to sing-box binary (can be auto-downloaded)
-  PROCS_N - Number of concurrent processes for testing. Current: 4
+  WORKERS_N - Number of concurrent processes for testing. Current: 4
   CONN_TIMEOUT - --connect-timeout for curl. Current: 3
   MAX_TIME - --max-time for curl. Current: 6
   RETRIES - --retry for curl. Current: 1
@@ -43,6 +45,7 @@ Examples:
   ./vless-validator.sh path/to/file_with_links_to_test.txt 20
   ./vless-validator.sh path/to/file_with_links_to_test.txt -10
   ./vless-validator.sh https://web/path/to/file_to_download_and_test.txt r5
+  TEST_URL="https://cp.cloudflare.com" DNS_SERVER="1.1.1.1" WORKERS_N=8 ./vless-validator.sh file.txt r
 ```
 
 > ℹ️ vless-validator saves logs in current directory.

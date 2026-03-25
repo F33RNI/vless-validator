@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <http://www.gnu.org/licenses/>.
 
-_VERSION="2.5.dev0"
+_VERSION="2.5.dev1"
 
 if [ -f ".env" ]; then source .env; fi
 TEST_URL=${TEST_URL:-http://example.com}
@@ -589,8 +589,10 @@ elif [ -f "$link_or_file" ]; then
 else
     echo "Usage: $0 LINK_OR_FILE [NUMBER_OF_LINKS_TO_TEST]"
     echo -e "\nNote:"
-    echo '  Add "r" before NUMBER_OF_LINKS_TO_TEST to select N random lines;'
-    echo '  add "-" before NUMBER_OF_LINKS_TO_TEST to select N lines from the bottom.'
+    echo '  Add "r" before NUMBER_OF_LINKS_TO_TEST to select N random lines'
+    echo '  or use just "r" as NUMBER_OF_LINKS_TO_TEST to test entire file randomly;'
+    echo '  Add "-" before NUMBER_OF_LINKS_TO_TEST to select N lines from the bottom'
+    echo '  or use just "-" as NUMBER_OF_LINKS_TO_TEST to test entire file backwards;'
     echo "  If needed, you can define environment variables in a .env file."
     echo -e "\nEnvironment variables:"
     echo "  TEST_URL - URL to test via VLESS. Current: $TEST_URL"
@@ -606,5 +608,6 @@ else
     echo "  $0 path/to/file_with_links_to_test.txt 20"
     echo "  $0 path/to/file_with_links_to_test.txt -10"
     echo "  $0 https://web/path/to/file_to_download_and_test.txt r5"
+    echo '  TEST_URL="https://cp.cloudflare.com" DNS_SERVER="1.1.1.1" WORKERS_N=8 '"$0"' file.txt r'
     exit 1
 fi
