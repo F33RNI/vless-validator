@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <http://www.gnu.org/licenses/>.
 
-_VERSION="2.3.dev0"
+_VERSION="2.4.dev0"
 
 if [ -f ".env" ]; then source .env; fi
 TEST_URL=${TEST_URL:-http://example.com}
@@ -72,7 +72,6 @@ uri_decode() {
 #   Parsed link in JSON format or nothing in case of error
 vless_to_outbound() {
     local _link="$1"
-    if [[ ! "$_link" == vless://* ]]; then return; fi
 
     # Remove scheme
     local _uri="${_link#vless://}"
@@ -223,6 +222,25 @@ get_unused_port() {
     fi
 }
 
+# Generates pool of unique free unused ports
+# Args:
+#   1: Number of ports to generate
+# Returns:
+#   Pool of unique ports
+get_unused_ports() {
+    local _count=$1
+    local _ports=()
+
+    while [ "${#_ports[@]}" -lt "$_count" ]; do
+        _port=$(get_unused_port)
+        if [[ ! " ${_ports[*]} " =~ " $_port " ]]; then
+            _ports+=("$_port")
+        fi
+    done
+
+    echo "${_ports[@]}"
+}
+
 # Checks for existing sing-box binary or downloads one and sets SING_BOX_PATH env variable
 find_or_download_sing_box() {
     SING_BOX_PATH=${SING_BOX_PATH:-./sing-box/sing-box}
@@ -317,17 +335,20 @@ find_or_download_sing_box() {
 # Tests single VLESS link
 # Args:
 #   1: VLESS link (must start with vless://)
+#   2 [Optional]: Inbound port for proxy. Will be generated using get_unused_port if empty
 # Returns (code):
 #   0 if working
 test_link() {
     local _link=$1
-    if [[ ! "$_link" == vless://* ]]; then return -1; fi
+    local _inbound_port=$2
 
     # Decode URI symbols
     local _link_decoded=$(uri_decode "$_link")
 
     # Find free port
-    local _inbound_port=$(get_unused_port)
+    if [ -z "$_inbound_port" ]; then
+        _inbound_port=$(get_unused_port)
+    fi
 
     # Split profile name
     local _profile_name="${_link_decoded#*#}"
@@ -335,10 +356,9 @@ test_link() {
         _profile_name="$_link_decoded"
     fi
 
-    # Add current PID in the middle of temp files
-    local _pid="$$"
-    local _sing_box_config="${_TMP_CONFIG_PREFIX}_${_pid}_${_TMP_CONFIG_SUFFIX}"
-    local _sing_box_log="${_TMP_LOG_PREFIX}_${_pid}_${_TMP_LOG_SUFFIX}"
+    # Add current inbound port in the middle of temp files
+    local _sing_box_config="${_TMP_CONFIG_PREFIX}_${_inbound_port}_${_TMP_CONFIG_SUFFIX}"
+    local _sing_box_log="${_TMP_LOG_PREFIX}_${_inbound_port}_${_TMP_LOG_SUFFIX}"
 
     local _outbound=$(vless_to_outbound "$_link_decoded")
     local _config=$(build_sing_box_config "$_outbound" "$_sing_box_log" "$_inbound_port")
@@ -447,20 +467,30 @@ test_file() {
         exit 1
     fi
 
-    # Split and process lines between multiple processes to speed things up
+    # Export some variables and functions for multiprocessing
     export log_datetime
     export -f LOGGER
     export SING_BOX_PATH
-    export TEST_URL DNS_SERVER CONN_TIMEOUT MAX_TIME RETRIES
+    export TEST_URL DNS_SERVER PROCS_N CONN_TIMEOUT MAX_TIME RETRIES
     export _LOG_PREFIX _TMP_LOG_PREFIX _TMP_LOG_SUFFIX _TMP_CONFIG_PREFIX _TMP_CONFIG_SUFFIX
     export CONFIG_DNS CONFIG_ROUTE CONFIG_OUTBOUND_DIRECT
     export -f uri_decode
     export -f vless_to_outbound
     export -f build_sing_box_config
-    export -f get_unused_port
     export -f test_link
+
+    # Generate inbound ports
+    local _ports=($(get_unused_ports "$PROCS_N"))
+    export inbound_ports=$(
+        IFS="|"
+        echo "${_ports[*]}"
+    )
+
+    # Process lines between multiple processes to speed things up
     LOGGER ""
-    printf "%s\n" "${_links[@]}" | xargs -P "$PROCS_N" -n 1 bash -c 'test_link "$1"' _
+    printf "%s\n" "${_links[@]}" | nl -n ln -w1 -s ' ' |
+        xargs -P "$PROCS_N" -n 2 bash -c \
+            'IFS="|"; _ports=($inbound_ports); unset IFS; test_link "$2" "${_ports[$(( ($1 - 1) % '"$PROCS_N"' ))]}"' _
 }
 
 # Downloads sing-box (if needed)
