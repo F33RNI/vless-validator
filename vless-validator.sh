@@ -15,12 +15,12 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <http://www.gnu.org/licenses/>.
 
-_VERSION="2.4.dev0"
+_VERSION="2.5.dev0"
 
 if [ -f ".env" ]; then source .env; fi
 TEST_URL=${TEST_URL:-http://example.com}
 DNS_SERVER=${DNS_SERVER:-8.8.8.8}
-PROCS_N=${PROCS_N:-4}
+WORKERS_N=${WORKERS_N:-4}
 CONN_TIMEOUT=${CONN_TIMEOUT:-3}
 MAX_TIME=${MAX_TIME:-6}
 RETRIES=${RETRIES:-1}
@@ -28,10 +28,10 @@ RETRIES=${RETRIES:-1}
 # Main script log file
 _LOG_PREFIX="vless-validator"
 
-# sing-box temp log and config files
-_TMP_LOG_PREFIX=".vless-validator"
+# Temp directory and sing-box log and config files
+_TMP_DIR=".vless-validator_tmp"
+_TMP_CHUNK_PREFIX="chunk"
 _TMP_LOG_SUFFIX="log_tmp.log"
-_TMP_CONFIG_PREFIX=".vless-validator"
 _TMP_CONFIG_SUFFIX="config_tmp.json"
 
 # Pre-defined sing-box config objects
@@ -48,8 +48,13 @@ CONFIG_OUTBOUND_DIRECT+=', "domain_resolver": { "server": "local", "strategy": "
 # Args:
 #   1: Text to log
 LOGGER() {
-    echo -e "$1"
-    echo -e "$1" >>"${_LOG_PREFIX}_${log_datetime}.log"
+    if [ ! -z "$LOGGER_PREFIX" ]; then
+        echo -e "[$LOGGER_PREFIX] $1"
+        echo -e "[$LOGGER_PREFIX] $1" >>"${_LOG_PREFIX}_${log_datetime}.log"
+    else
+        echo -e "$1"
+        echo -e "$1" >>"${_LOG_PREFIX}_${log_datetime}.log"
+    fi
 }
 
 # Decodes URI (and replaces "+" with " ", "&amp;" with "&")
@@ -356,9 +361,12 @@ test_link() {
         _profile_name="$_link_decoded"
     fi
 
+    # Make sure temp directory exists
+    mkdir -p "${_TMP_DIR}"
+
     # Add current inbound port in the middle of temp files
-    local _sing_box_config="${_TMP_CONFIG_PREFIX}_${_inbound_port}_${_TMP_CONFIG_SUFFIX}"
-    local _sing_box_log="${_TMP_LOG_PREFIX}_${_inbound_port}_${_TMP_LOG_SUFFIX}"
+    local _sing_box_config="${_TMP_DIR}/${_inbound_port}_${_TMP_CONFIG_SUFFIX}"
+    local _sing_box_log="${_TMP_DIR}/${_inbound_port}_${_TMP_LOG_SUFFIX}"
 
     local _outbound=$(vless_to_outbound "$_link_decoded")
     local _config=$(build_sing_box_config "$_outbound" "$_sing_box_log" "$_inbound_port")
@@ -431,35 +439,35 @@ test_file() {
 
     # Entire file (only vless)
     if [ -z "$_lines_n" ] || [[ "$_lines_n" == "0" ]]; then
-        LOGGER "Testing entire file $_file_path using $PROCS_N processes"
+        LOGGER "Testing entire file $_file_path using $WORKERS_N workers"
         mapfile -t _links < <(_filter_vless)
 
     # Random ALL vless lines (r or r0)
     elif [[ "$_lines_n" =~ ^r$ ]] || [[ "$_lines_n" =~ ^r0$ ]]; then
-        LOGGER "Testing ALL random vless lines from $_file_path using $PROCS_N processes"
+        LOGGER "Testing ALL random vless lines from $_file_path using $WORKERS_N workers"
         mapfile -t _links < <(_filter_vless | shuf)
 
     # Random N vless lines
     elif [[ "$_lines_n" =~ ^r([0-9]+)$ ]]; then
         local _count="${BASH_REMATCH[1]}"
-        LOGGER "Testing $_count random vless lines from $_file_path using $PROCS_N processes"
+        LOGGER "Testing $_count random vless lines from $_file_path using $WORKERS_N workers"
         mapfile -t _links < <(_filter_vless | shuf -n "$_count")
 
     # Reverse ALL vless lines (- or -0)
     elif [[ "$_lines_n" == "-" ]] || [[ "$_lines_n" == "-0" ]]; then
-        LOGGER "Testing ALL vless lines in reverse order from $_file_path using $PROCS_N processes"
+        LOGGER "Testing ALL vless lines in reverse order from $_file_path using $WORKERS_N workers"
         mapfile -t _links < <(_filter_vless | tac)
 
     # Last N vless lines
     elif [[ "$_lines_n" =~ ^-([0-9]+)$ ]]; then
         local _count="${BASH_REMATCH[1]}"
-        LOGGER "Testing last $_count vless lines from $_file_path using $PROCS_N processes"
+        LOGGER "Testing last $_count vless lines from $_file_path using $WORKERS_N workers"
         mapfile -t _links < <(_filter_vless | tail -n "$_count")
 
     # First N vless lines
     elif [[ "$_lines_n" =~ ^[0-9]+$ ]]; then
         local _count="$_lines_n"
-        LOGGER "Testing first $_count vless lines from $_file_path using $PROCS_N processes"
+        LOGGER "Testing first $_count vless lines from $_file_path using $WORKERS_N workers"
         mapfile -t _links < <(_filter_vless | head -n "$_count")
 
     else
@@ -471,26 +479,54 @@ test_file() {
     export log_datetime
     export -f LOGGER
     export SING_BOX_PATH
-    export TEST_URL DNS_SERVER PROCS_N CONN_TIMEOUT MAX_TIME RETRIES
-    export _LOG_PREFIX _TMP_LOG_PREFIX _TMP_LOG_SUFFIX _TMP_CONFIG_PREFIX _TMP_CONFIG_SUFFIX
+    export TEST_URL DNS_SERVER WORKERS_N CONN_TIMEOUT MAX_TIME RETRIES
+    export _LOG_PREFIX _TMP_DIR _TMP_CHUNK_PREFIX _TMP_LOG_SUFFIX _TMP_CONFIG_SUFFIX
     export CONFIG_DNS CONFIG_ROUTE CONFIG_OUTBOUND_DIRECT
     export -f uri_decode
     export -f vless_to_outbound
     export -f build_sing_box_config
-    export -f test_link
+
+    # Worker model for test_link function
+    # Args:
+    #   1: Worker ID (starting from 1) for LOGGER
+    #   2: Inbound port
+    #   3 [Array]: Chunk of links
+    run_worker() {
+        local LOGGER_PREFIX="$1"
+        local _port="$2"
+        shift 2
+        for _link in "$@"; do test_link "$_link" "$_port" || true; done
+    }
+    export -f run_worker
+
+    # Stops workers on CTRL+C and exit
+    cleanup() {
+        trap - INT TERM EXIT
+        jobs -p | xargs -r kill >/dev/null 2>&1
+        rm -rf "${_TMP_DIR}"
+    }
+    trap cleanup INT TERM EXIT
 
     # Generate inbound ports
-    local _ports=($(get_unused_ports "$PROCS_N"))
-    export inbound_ports=$(
-        IFS="|"
-        echo "${_ports[*]}"
-    )
+    local _inbound_ports=($(get_unused_ports "$WORKERS_N"))
 
-    # Process lines between multiple processes to speed things up
+    # Make sure temp directory exists
+    mkdir -p "${_TMP_DIR}"
+
+    # Split links into chunks and start workers
+    printf "%s\n" "${_links[@]}" | split -n l/"$WORKERS_N" -d - "${_TMP_DIR}/${_TMP_CHUNK_PREFIX}_"
     LOGGER ""
-    printf "%s\n" "${_links[@]}" | nl -n ln -w1 -s ' ' |
-        xargs -P "$PROCS_N" -n 2 bash -c \
-            'IFS="|"; _ports=($inbound_ports); unset IFS; test_link "$2" "${_ports[$(( ($1 - 1) % '"$PROCS_N"' ))]}"' _
+    i=0
+    for _chunk in "${_TMP_DIR}/${_TMP_CHUNK_PREFIX}"*; do
+        [ -s "$_chunk" ] || continue
+
+        __port="${_inbound_ports[$i]}"
+        mapfile -t __lines <"$_chunk"
+
+        run_worker "$((i + 1))" "$__port" "${__lines[@]}" &
+        ((i++))
+    done
+    wait
 }
 
 # Downloads sing-box (if needed)
@@ -560,7 +596,7 @@ else
     echo "  TEST_URL - URL to test via VLESS. Current: $TEST_URL"
     echo "  DNS_SERVER - Remote UDP DNS server IP. Current: $DNS_SERVER"
     echo "  SING_BOX_PATH - Path to sing-box binary (can be auto-downloaded)"
-    echo "  PROCS_N - Number of concurrent processes for testing. Current: $PROCS_N"
+    echo "  WORKERS_N - Number of concurrent processes for testing. Current: $WORKERS_N"
     echo "  CONN_TIMEOUT - --connect-timeout for curl. Current: $CONN_TIMEOUT"
     echo "  MAX_TIME - --max-time for curl. Current: $MAX_TIME"
     echo "  RETRIES - --retry for curl. Current: $RETRIES"
