@@ -25,6 +25,9 @@ CONN_TIMEOUT=${CONN_TIMEOUT:-3}
 MAX_TIME=${MAX_TIME:-6}
 RETRIES=${RETRIES:-1}
 
+# Output file for working links (overridden in main after log_datetime is set)
+OUTPUT_FILE=${OUTPUT_FILE:-""}
+
 # Main script log file
 _LOG_PREFIX="vless-validator"
 
@@ -46,7 +49,7 @@ CONFIG_OUTBOUND_DIRECT+=', "domain_resolver": { "server": "local", "strategy": "
 
 # Prints log into terminal and log file
 # Args:
-#   1: Text to log
+# 1: Text to log
 LOGGER() {
     if [ ! -z "$LOGGER_PREFIX" ]; then
         echo -e "[$LOGGER_PREFIX] $1"
@@ -59,9 +62,9 @@ LOGGER() {
 
 # Decodes URI (and replaces "+" with " ", "&amp;" with "&")
 # Args:
-#   1: URI to decode
+# 1: URI to decode
 # Returns:
-#   Decoded URI
+# Decoded URI
 uri_decode() {
     local _input="$1"
     printf '%b\n' "$(printf '%s' "$_input" |
@@ -72,9 +75,9 @@ uri_decode() {
 
 # Converts VLESS link to sing-box's outbound JSON config
 # Args:
-#   1: Decoded (from URI) VLESS link (must start with vless://)
+# 1: Decoded (from URI) VLESS link (must start with vless://)
 # Returns:
-#   Parsed link in JSON format or nothing in case of error
+# Parsed link in JSON format or nothing in case of error
 vless_to_outbound() {
     local _link="$1"
 
@@ -158,11 +161,11 @@ vless_to_outbound() {
 
 # Builds sing-box JSON config
 # Args:
-#   1: VLESS outbound (output of vless_to_outbound function)
-#   2: Path to sing-box .log file
-#   3: Port number for SOCKS5 inbound
+# 1: VLESS outbound (output of vless_to_outbound function)
+# 2: Path to sing-box .log file
+# 3: Port number for SOCKS5 inbound
 # Returns:
-#   Full JSON config for sing-box
+# Full JSON config for sing-box
 build_sing_box_config() {
     local _vless_outbound=$1
     local _sing_box_log=$2
@@ -180,14 +183,14 @@ build_sing_box_config() {
 # Generates unused port
 # TODO: Improve this function
 # Returns:
-#   Unused port in 2000-65000 range
+# Unused port in 2000-65000 range
 get_unused_port() {
     # Checks if port is in use
     # TODO: Test and improve this function
     # Args:
-    #   1: Port number
+    # 1: Port number
     # Returns (code):
-    #   0 if in use
+    # 0 if in use
     is_port_in_use() {
         local _port=$1
 
@@ -229,9 +232,9 @@ get_unused_port() {
 
 # Generates pool of unique free unused ports
 # Args:
-#   1: Number of ports to generate
+# 1: Number of ports to generate
 # Returns:
-#   Pool of unique ports
+# Pool of unique ports
 get_unused_ports() {
     local _count=$1
     local _ports=()
@@ -337,12 +340,31 @@ find_or_download_sing_box() {
     find_or_download_sing_box
 }
 
+# Appends a working link to OUTPUT_FILE safely across processes
+# Args:
+# 1: VLESS link to save
+save_working_link() {
+    local _link="$1"
+    if [ -z "$OUTPUT_FILE" ]; then
+        return
+    fi
+
+    if command -v flock >/dev/null 2>&1; then
+        {
+            flock -x 200
+            echo "$_link" >> "$OUTPUT_FILE"
+        } 200<>"${OUTPUT_FILE}.lock"
+    else
+        echo "$_link" >> "$OUTPUT_FILE"
+    fi
+}
+
 # Tests single VLESS link
 # Args:
-#   1: VLESS link (must start with vless://)
-#   2 [Optional]: Inbound port for proxy. Will be generated using get_unused_port if empty
+# 1: VLESS link (must start with vless://)
+# 2 [Optional]: Inbound port for proxy. Will be generated using get_unused_port if empty
 # Returns (code):
-#   0 if working
+# 0 if working
 test_link() {
     local _link=$1
     local _inbound_port=$2
@@ -410,6 +432,7 @@ test_link() {
         --retry-all-errors --retry-connrefused \
         -L $TEST_URL >/dev/null 2>&1; then
         LOGGER "[$_profile_name] WORKING! WORKING! WORKING! ^-^\nLink: $_link\nOutbound config: $_outbound"
+        save_working_link "$_link"
         _stop_sing_box
         return 0
     fi
@@ -420,8 +443,8 @@ test_link() {
 
 # Tests lines from a local file
 # Args:
-#   1: Path to file
-#   2: NUMBER_OF_LINKS_TO_TEST CLI argument
+# 1: Path to file
+# 2: NUMBER_OF_LINKS_TO_TEST CLI argument
 test_file() {
     local _file_path=$1
     local _lines_n=$2
@@ -475,6 +498,12 @@ test_file() {
         exit 1
     fi
 
+    # Initialize output file for working links
+    if [ -n "$OUTPUT_FILE" ]; then
+        > "$OUTPUT_FILE"
+        LOGGER "Working links will be saved to: $OUTPUT_FILE"
+    fi
+
     # Export some variables and functions for multiprocessing
     export log_datetime
     export -f LOGGER
@@ -482,15 +511,17 @@ test_file() {
     export TEST_URL DNS_SERVER WORKERS_N CONN_TIMEOUT MAX_TIME RETRIES
     export _LOG_PREFIX _TMP_DIR _TMP_CHUNK_PREFIX _TMP_LOG_SUFFIX _TMP_CONFIG_SUFFIX
     export CONFIG_DNS CONFIG_ROUTE CONFIG_OUTBOUND_DIRECT
+    export OUTPUT_FILE
     export -f uri_decode
     export -f vless_to_outbound
     export -f build_sing_box_config
+    export -f save_working_link
 
     # Worker model for test_link function
     # Args:
-    #   1: Worker ID (starting from 1) for LOGGER
-    #   2: Inbound port
-    #   3 [Array]: Chunk of links
+    # 1: Worker ID (starting from 1) for LOGGER
+    # 2: Inbound port
+    # 3 [Array]: Chunk of links
     run_worker() {
         local LOGGER_PREFIX="$1"
         local _port="$2"
@@ -527,6 +558,16 @@ test_file() {
         ((i++))
     done
     wait
+
+    # Report summary
+    if [ -n "$OUTPUT_FILE" ] && [ -f "$OUTPUT_FILE" ]; then
+        local _working_count=$(wc -l < "$OUTPUT_FILE" | tr -d ' ')
+        if [ "$_working_count" -gt 0 ] 2>/dev/null; then
+            LOGGER "Saved $_working_count working link(s) to $OUTPUT_FILE"
+        else
+            LOGGER "No working links found"
+        fi
+    fi
 }
 
 # Downloads sing-box (if needed)
@@ -538,6 +579,11 @@ prepare() {
     # Log test URL and DNS
     LOGGER "Test URL: $TEST_URL"
     LOGGER "Remote DNS server: $DNS_SERVER"
+
+    # Log output file
+    if [ -n "$OUTPUT_FILE" ]; then
+        LOGGER "Working links will be saved to: $OUTPUT_FILE"
+    fi
 }
 
 # ####################### #
@@ -550,9 +596,13 @@ set -o pipefail -o noclobber
 # Timestamp for log file
 log_datetime=$(date +"%Y_%m_%d__%H_%M_%S")
 
+# Default output file for working links (can be overridden via .env or env var)
+OUTPUT_FILE="${OUTPUT_FILE:-vless_working_${log_datetime}.txt}"
+export OUTPUT_FILE
+
 # Script name and version
 echo "vless-validator"
-echo "                by F3RNI"
+echo " by F3RNI"
 echo -e "version: $_VERSION\n"
 
 # CLI arguments
@@ -563,8 +613,16 @@ lines_n="$2"
 if [[ "$link_or_file" == vless://* ]]; then
     prepare
     LOGGER ""
+    # Initialize output file
+    if [ -n "$OUTPUT_FILE" ]; then
+        > "$OUTPUT_FILE"
+    fi
     test_link "$link_or_file"
-    exit $?
+    _result=$?
+    if [ $_result -eq 0 ] && [ -n "$OUTPUT_FILE" ] && [ -f "$OUTPUT_FILE" ]; then
+        LOGGER "Saved working link to $OUTPUT_FILE"
+    fi
+    exit $_result
 
 # Link to download
 elif [[ "$link_or_file" == http* ]]; then
@@ -589,25 +647,26 @@ elif [ -f "$link_or_file" ]; then
 else
     echo "Usage: $0 LINK_OR_FILE [NUMBER_OF_LINKS_TO_TEST]"
     echo -e "\nNote:"
-    echo '  Add "r" before NUMBER_OF_LINKS_TO_TEST to select N random lines'
-    echo '  or use just "r" as NUMBER_OF_LINKS_TO_TEST to test entire file randomly;'
-    echo '  Add "-" before NUMBER_OF_LINKS_TO_TEST to select N lines from the bottom'
-    echo '  or use just "-" as NUMBER_OF_LINKS_TO_TEST to test entire file backwards;'
-    echo "  If needed, you can define environment variables in a .env file."
+    echo ' Add "r" before NUMBER_OF_LINKS_TO_TEST to select N random lines'
+    echo ' or use just "r" as NUMBER_OF_LINKS_TO_TEST to test entire file randomly;'
+    echo ' Add "-" before NUMBER_OF_LINKS_TO_TEST to select N lines from the bottom'
+    echo ' or use just "-" as NUMBER_OF_LINKS_TO_TEST to test entire file backwards;'
+    echo " If needed, you can define environment variables in a .env file."
     echo -e "\nEnvironment variables:"
-    echo "  TEST_URL - URL to test via VLESS. Current: $TEST_URL"
-    echo "  DNS_SERVER - Remote UDP DNS server IP. Current: $DNS_SERVER"
-    echo "  SING_BOX_PATH - Path to sing-box binary (can be auto-downloaded)"
-    echo "  WORKERS_N - Number of concurrent processes for testing. Current: $WORKERS_N"
-    echo "  CONN_TIMEOUT - --connect-timeout for curl. Current: $CONN_TIMEOUT"
-    echo "  MAX_TIME - --max-time for curl. Current: $MAX_TIME"
-    echo "  RETRIES - --retry for curl. Current: $RETRIES"
+    echo " TEST_URL - URL to test via VLESS. Current: $TEST_URL"
+    echo " DNS_SERVER - Remote UDP DNS server IP. Current: $DNS_SERVER"
+    echo " SING_BOX_PATH - Path to sing-box binary (can be auto-downloaded)"
+    echo " WORKERS_N - Number of concurrent processes for testing. Current: $WORKERS_N"
+    echo " CONN_TIMEOUT - --connect-timeout for curl. Current: $CONN_TIMEOUT"
+    echo " MAX_TIME - --max-time for curl. Current: $MAX_TIME"
+    echo " RETRIES - --retry for curl. Current: $RETRIES"
+    echo " OUTPUT_FILE - File to save working links. Current: $OUTPUT_FILE"
     echo -e "\nExamples:"
-    echo "  $0 vless://UUID@IP:PORT?flow=xtls-rpr..."
-    echo "  $0 path/to/file_with_links_to_test.txt"
-    echo "  $0 path/to/file_with_links_to_test.txt 20"
-    echo "  $0 path/to/file_with_links_to_test.txt -10"
-    echo "  $0 https://web/path/to/file_to_download_and_test.txt r5"
-    echo '  TEST_URL="https://cp.cloudflare.com" DNS_SERVER="1.1.1.1" WORKERS_N=8 '"$0"' file.txt r'
+    echo " $0 vless://UUID@IP:PORT?flow=xtls-rpr..."
+    echo " $0 path/to/file_with_links_to_test.txt"
+    echo " $0 path/to/file_with_links_to_test.txt 20"
+    echo " $0 path/to/file_with_links_to_test.txt -10"
+    echo " $0 https://web/path/to/file_to_download_and_test.txt r5"
+    echo ' TEST_URL="https://cp.cloudflare.com" DNS_SERVER="1.1.1.1" WORKERS_N=8 '"$0"' file.txt r'
     exit 1
 fi
